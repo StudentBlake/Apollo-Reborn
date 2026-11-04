@@ -81,7 +81,7 @@ int main(void) { @autoreleasepool {
             Check([[original valueForHTTPHeaderField:@"Cookie"] isEqual:@"stale-cookie"], @"original request unchanged");
         }
     }
-    for (NSString *path in @[@"/searching", @"/search/extra", @"/r/ios/hot", @"/r/ios/search/extra", @"/user/Alice/m/dev/search.json",
+    for (NSString *path in @[@"/searching", @"/search/extra", @"/r/ios/top", @"/r/ios/search/extra", @"/user/Alice/m/dev/search.json",
         @"/user/alice/search", @"/api/search_reddit_names", @"/subreddits/mine/subscriber", @"/comments/abc", @"/"]) {
         Check(!ApolloWebJSONRequestIsSearchRead(@"GET", path), @"nearby reads aren't search");
         NSURLRequest *sent = ApolloWebJSONRewriteRequest(Request(path, ApolloWebJSONSyntheticBearerTokenForUsername(@"alice")));
