@@ -90,6 +90,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloDuoAccount.m \
     $(SRC_DIR)/ApolloDuoRailCore.m \
     $(SRC_DIR)/ApolloDuoNavigationGestures.m \
+    $(SRC_DIR)/ApolloDuoSplitDivider.m \
     $(SRC_DIR)/ApolloDuoRail.xm \
     $(SRC_DIR)/ApolloDuoSubsChrome.m \
     $(SRC_DIR)/ApolloDuoSubsChromeHooks.xm \
@@ -239,6 +240,7 @@ ApolloReborn_FILES = \
     $(SRC_DIR)/ApolloCrosspostTitle.xm \
     $(SRC_DIR)/ApolloMessagesKeyboardInset.xm \
     $(SRC_DIR)/ApolloTrueBlackKeyboard.xm \
+    $(SRC_DIR)/ApolloSpelling.xm \
     $(SRC_DIR)/ApolloAutoHideTabBar.xm \
     $(SRC_DIR)/ApolloTopBarScrollPresentation.m \
     $(SRC_DIR)/ApolloCompactTabBarView.m \
