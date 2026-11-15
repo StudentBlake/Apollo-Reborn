@@ -55,7 +55,9 @@ static int ApolloDuoRailModeForTabs(UITabBarController *tabs) {
         return ApolloDuoModePhone;
     }
     UIWindow *window = tabs.view.window ?: ApolloDeviceAppWindow();
-    return ApolloDuoModeFromWindow(window, ApolloDuoRailDualDisplays() ? 1 : 0);
+    if (!window) return ApolloDuoModePhone;
+    CGSize size = ApolloDuoLayoutSize(window.bounds.size);
+    return ApolloDuoModeFromBounds(ApolloDuoRailDualDisplays() ? 1 : 0, size.width, size.height);
 }
 
 static int ApolloDuoRailCurrentMode(void) {
@@ -100,8 +102,11 @@ BOOL ApolloDuoUsesAdaptiveBars(void) {
 }
 
 BOOL ApolloDuoAllowsTabBarScrollHiding(void) {
+    // Scroll hiding needs the bottom tab bar: the opened portrait display, or
+    // a short pane under a Picture in Picture, which keeps the bottom bar too.
     return !ApolloDuoUsesAdaptiveBars() ||
-        (!ApolloDuoSplitIsResizing() && ApolloDuoSplitIsUnfoldedPortrait());
+        (!ApolloDuoSplitIsResizing()
+            && (ApolloDuoSplitIsUnfoldedPortrait() || ApolloDuoSplitIsShortPane()));
 }
 
 BOOL ApolloDuoRailHasVisibleSideBar(void) {
@@ -189,8 +194,11 @@ CGFloat ApolloDuoRailFeedContentWidth(UITableView *table) {
     if (![tabs isKindOfClass:UITabBarController.class]) return 0.0;
     // During a display resize the bar may be detached and the table may
     // still carry its old bounds. Neither is a valid measurement fallback.
-    CGFloat transitionWidth = ApolloDuoSplitTransitionContentWidth(table,
-        (CGFloat)ApolloDuoRailWidthClosed + 12.0);
+    // A short pane (another window stacked above or below Apollo on the opened
+    // display) is landscape-shaped but keeps the bottom tab bar, so it must not
+    // reserve the trailing rail: that clipped feed media 84pt short of the edge.
+    CGFloat railInset = ApolloDuoSplitIsShortPane() ? 0.0 : (CGFloat)ApolloDuoRailWidthClosed + 12.0;
+    CGFloat transitionWidth = ApolloDuoSplitTransitionContentWidth(table, railInset);
     if (transitionWidth > 0.0) return transitionWidth;
     if (ApolloDuoSplitIsUnfoldedPortrait()) return 0.0;
     if (ApolloDuoRailModeForTabs(tabs) != ApolloDuoModeClosed
@@ -523,25 +531,39 @@ static void ApolloDuoRailApplyAccent(UITabBarController *tabs) {
     }
 }
 
-CGRect ApolloDuoActiveVerticalDivision(UIView *view) {
+static CGRect ApolloDuoActiveDivision(UIView *view, BOOL horizontal) {
     // Resolve the public iOS 27.1 API dynamically for the device build's iOS 26 SDK.
     if (@available(iOS 27.1, *)) {
         UIWindow *window = view.window;
-        Class kindClass = NSClassFromString(@"UIViewReservedRegionKind");
-        SEL query = NSSelectorFromString(@"reservedRegionsOfKind:");
-        if (!window || !kindClass || ![window respondsToSelector:query]) return CGRectNull;
-        id kind = ((id (*)(id, SEL))objc_msgSend)(kindClass, NSSelectorFromString(@"divisionRegionKind"));
+        Class kindClass = ApolloClassUIViewReservedRegionKind;
+        SEL query = @selector(reservedRegionsOfKind:);
+        if (!window || !kindClass || ![window respondsToSelector:query]
+            || ![kindClass respondsToSelector:@selector(divisionRegionKind)]) return CGRectNull;
+        id kind = ((id (*)(id, SEL))objc_msgSend)(kindClass, @selector(divisionRegionKind));
         NSArray *regions = ((id (*)(id, SEL, id))objc_msgSend)(window, query, kind);
         for (id region in regions) {
-            if (!((BOOL (*)(id, SEL))objc_msgSend)(region, NSSelectorFromString(@"isActive"))) continue;
-            CGRect frame = ((CGRect (*)(id, SEL))objc_msgSend)(region, NSSelectorFromString(@"frame"));
-            // A portrait/tabletop fold is horizontal; only the book arrangement
-            // splits content into side-by-side halves.
-            if (CGRectGetHeight(frame) <= CGRectGetWidth(frame)) continue;
+            if (![region respondsToSelector:@selector(isActive)] || ![region respondsToSelector:@selector(frame)]
+                || !((BOOL (*)(id, SEL))objc_msgSend)(region, @selector(isActive))) continue;
+            CGRect frame = ((CGRect (*)(id, SEL))objc_msgSend)(region, @selector(frame));
+            // Book and tabletop are separate consumers of the same system
+            // geometry; neither infers a division from a hinge angle.
+            if (!isfinite(frame.origin.x) || !isfinite(frame.origin.y)
+                || !isfinite(frame.size.width) || !isfinite(frame.size.height)
+                || frame.size.width < 0 || frame.size.height < 0) continue;
+            if (horizontal ? CGRectGetWidth(frame) <= CGRectGetHeight(frame)
+                           : CGRectGetHeight(frame) <= CGRectGetWidth(frame)) continue;
             return [view convertRect:frame fromView:window];
         }
     }
     return CGRectNull;
+}
+
+CGRect ApolloDuoActiveVerticalDivision(UIView *view) {
+    return ApolloDuoActiveDivision(view, NO);
+}
+
+CGRect ApolloDuoActiveHorizontalDivision(UIView *view) {
+    return ApolloDuoActiveDivision(view, YES);
 }
 
 void ApolloDuoRailSync(void) {
