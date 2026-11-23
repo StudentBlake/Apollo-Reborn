@@ -33,7 +33,7 @@ concurrency:
 jobs:
   build-release:
     name: Build six IPA variants
-    runs-on: macos-15
+    runs-on: macos-26
     permissions:
       contents: write
 
