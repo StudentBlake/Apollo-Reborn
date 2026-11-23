@@ -207,6 +207,15 @@ NSString *ApolloAISummaryLanguage(BOOL *picked) {
     return summaryLanguage;
 }
 
+// The language's English name ("English", "Portuguese", "Chinese
+// (Traditional)"), as the prompts name it. nil when there is no language.
+static NSString *ApolloAISummaryLanguageName(NSString *language) {
+    NSString *name = language.length > 0
+        ? [[NSLocale localeWithLocaleIdentifier:@"en_US"] localizedStringForLocaleIdentifier:language]
+        : nil;
+    return name.length > 0 ? name : nil;
+}
+
 // `instructions` led by the summary language, worded as Apple's guide words it
 // ("You MUST respond in Italian"). It has to come FIRST: appended after the
 // summary rules, the on-device model still answered the Record (Portuguese)
@@ -215,9 +224,7 @@ NSString *ApolloAISummaryLanguage(BOOL *picked) {
 static NSString *const kApolloAISummaryLanguageLeadOpening = @"You MUST respond in ";
 
 static NSString *ApolloAISummaryLanguageLead(NSString *language) {
-    NSString *name = language.length > 0
-        ? [[NSLocale localeWithLocaleIdentifier:@"en_US"] localizedStringForLocaleIdentifier:language]
-        : nil;
+    NSString *name = ApolloAISummaryLanguageName(language);
     return name.length > 0 ? [NSString stringWithFormat:@"%@%@. ", kApolloAISummaryLanguageLeadOpening, name] : nil;
 }
 
@@ -250,6 +257,26 @@ static NSString *ApolloAIOnDeviceFallbackInstructions(NSString *instructions, NS
     }
     NSString *lead = ApolloAISummaryLanguageLead(language);
     return lead ? [lead stringByAppendingString:rules] : rules;
+}
+
+// The text to summarize, closed by the summary language too. The instructions
+// line alone doesn't hold once the text is long and in another script: with it,
+// the on-device model wrote 8 of 12 In-depth arriyadiyah.com link summaries in
+// Arabic under an English device. Naming the language again after the text, the
+// last thing the model reads before it answers, brought that to 12 of 12, and
+// it held for the post, comment and post-and-link prompts and for other source
+// languages. Cloud models get the same line; they already followed the
+// instructions, so it changes nothing there. Unchanged when there is no summary
+// language: the model then answers in the text's own language, as before.
+static NSString *ApolloAIPromptInLanguage(NSString *text, NSString *language) {
+    NSString *name = ApolloAISummaryLanguageName(language);
+    if (name.length == 0 || text.length == 0) return text;
+    ApolloLog(@"[AISummary] prompt closes with the summary language (%@)", name);
+    return [NSString stringWithFormat:@"%@\n\nWrite the summary in %@.", text, name];
+}
+
+static NSString *ApolloAIPromptInSummaryLanguage(NSString *text) {
+    return ApolloAIPromptInLanguage(text, ApolloAISummaryLanguage(NULL));
 }
 
 static NSString *ApolloAIPostInstructionsForDetail(ApolloAISummaryDetail detail) {
@@ -430,12 +457,20 @@ static NSMutableDictionary<NSString *, NSNumber *> *sCommentSummaryDetails;
 static NSMutableDictionary<NSString *, NSString *> *sPostSummaryProfiles;
 static NSMutableDictionary<NSString *, NSString *> *sCommentSummaryProfiles;
 // "post|fullName" / "comment|fullName" for summaries the on-device fallback wrote
-// during the current visit. Their "apple|<lang>" profile never matches while a
+// during the current visit. Their versioned Apple profile never matches while a
 // cloud provider is configured, which is what retries cloud on the next open;
 // until then they must still count, or the card empties on the next header
 // restore and a same-visit generation pass writes the summary a second time.
 // Cleared in viewDidDisappear, like sTapRequested.
 static NSMutableSet<NSString *> *sAIFallbackAcceptedThisVisit;
+
+// Ends the on-device profile when the prompts name a language. "2": the text
+// itself now closes with the language too (ApolloAIPromptInSummaryLanguage), and
+// an on-device summary cached before that can be in the article's language
+// instead ("apple|en" never equals "apple|en|2"), so those regenerate once.
+// Cloud profiles don't carry it: cloud models already answered in the named
+// language, and regenerating would spend the user's API credits for nothing.
+static NSString *const kApolloAIOnDevicePromptRevision = @"2";
 
 static NSString *ApolloAICurrentGenerationProfile(void) {
     // The summary language is part of what produced the text, so a summary in
@@ -448,7 +483,11 @@ static NSString *ApolloAICurrentGenerationProfile(void) {
     // yet, generation falls back to on-device, and keying that summary as
     // "openai|…" would make it survive as a stale cloud entry the moment the
     // key is added.
-    if (!ApolloAICloudConfigured()) return [@"apple|" stringByAppendingString:language];
+    if (!ApolloAICloudConfigured()) {
+        return language.length > 0
+            ? [NSString stringWithFormat:@"apple|%@|%@", language, kApolloAIOnDevicePromptRevision]
+            : @"apple|";
+    }
     // Same effective model the cloud bridge would actually send (stored value or
     // the provider default), so switching models invalidates cached summaries.
     NSString *model = ApolloAICloudEffectiveModel() ?: @"";
@@ -2964,8 +3003,8 @@ static NSString *ApolloAITruncateForFM(NSString *prompt) {
 static NSString *const kApolloAIOnDeviceModelLabel = @"Apple Intelligence";
 
 // Stores the profile of the backend that actually wrote the summary. A cloud
-// pass that fell back to on-device carries `fallbackProfile` ("apple|<lang>",
-// in the language the fallback wrote), so the next open retries cloud;
+// pass that fell back to on-device carries its versioned Apple language profile,
+// so the next open retries cloud;
 // ApolloAIProfileIsCurrent keeps it valid for the rest of this visit.
 static void ApolloAIRecordGenerationProfile(BOOL isPost, NSString *fullName,
                                             NSString *generationProfile, NSString *fallbackProfile) {
@@ -3015,8 +3054,8 @@ static NSString *ApolloAICloudLanguageDirective(void) {
 // `modelLabel` names the backend that produced `final` ("gpt-5.4-mini",
 // "Apple Intelligence", ...) so callers can record it next to the cached
 // summary for the card's trust caption; nil on error. `fallbackProfile` is set
-// only when the on-device fallback wrote `final`: "apple|<lang>" in the
-// language it was asked for, fixed when the fallback started.
+// only when the on-device fallback wrote `final`: its on-device language profile,
+// fixed when the fallback started.
 static void ApolloAISummarizeWithBackends(NSString *text, NSString *identifier, NSString *instructions,
                                           NSInteger cloudResponseTokens, NSInteger fmResponseTokens,
                                           void (^onPartial)(NSString *partial),
@@ -3043,9 +3082,16 @@ static void ApolloAISummarizeWithBackends(NSString *text, NSString *identifier, 
         // correct session otherwise (e.g. a fallback whose prewarm was consumed).
         NSString *fmLanguage = cloudError ? ApolloAIOnDeviceFallbackLanguage() : nil;
         NSString *fmInstructions = cloudError ? ApolloAIOnDeviceFallbackInstructions(instructions, fmLanguage) : instructions;
-        NSString *fallbackProfile = cloudError ? [@"apple|" stringByAppendingString:fmLanguage ?: @""] : nil;
+        NSString *fallbackProfile = cloudError
+            ? (fmLanguage.length > 0
+                ? [NSString stringWithFormat:@"apple|%@|%@", fmLanguage, kApolloAIOnDevicePromptRevision]
+                : @"apple|")
+            : nil;
+        NSString *fmPrompt = cloudError
+            ? ApolloAIPromptInLanguage(fmText, fmLanguage)
+            : ApolloAIPromptInSummaryLanguage(fmText);
         [fmBridge prepareSession:identifier instructions:fmInstructions];
-        [fmBridge summarize:fmText
+        [fmBridge summarize:fmPrompt
                  identifier:identifier
                instructions:fmInstructions
       maximumResponseTokens:fmResponseTokens
@@ -3077,7 +3123,7 @@ static void ApolloAISummarizeWithBackends(NSString *text, NSString *identifier, 
     NSString *cloudModelLabel = [ApolloAICloudEffectiveModel() copy] ?: @"cloud model";
     NSString *cloudInstructions = [ApolloAICloudLanguageDirective()
                                    stringByAppendingString:instructions ?: @""];
-    [[ApolloAICloudBridge shared] summarize:text
+    [[ApolloAICloudBridge shared] summarize:ApolloAIPromptInSummaryLanguage(text)
                                  identifier:identifier
                                instructions:cloudInstructions
                       maximumResponseTokens:cloudResponseTokens
